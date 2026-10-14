@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>쌓기나무 놀이터</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:#cfe8ff;font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;touch-action:none;user-select:none}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+.bar{position:fixed;left:50%;transform:translateX(-50%);display:flex;gap:8px;flex-wrap:wrap;justify-content:center;padding:8px;background:rgba(255,255,255,.92);border-radius:16px;box-shadow:0 4px 16px rgba(0,0,0,.2);max-width:96vw}
+#top{top:calc(10px + env(safe-area-inset-top,0px))}#bot{bottom:calc(10px + env(safe-area-inset-bottom,0px))}
+button{font:inherit;font-size:15px;padding:10px 14px;min-height:44px;border:0;border-radius:12px;background:#e8eefc;color:#223;cursor:pointer}
+button.on{background:#3b6cff;color:#fff}
+button.red{background:#ff5a5a;color:#fff}
+.sw{width:38px;height:38px;min-height:38px;padding:0;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 1px #aaa}
+.sw.on{box-shadow:0 0 0 3px #3b6cff}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:9}
+#box{background:#fff;border-radius:18px;padding:18px;text-align:center;max-width:92vw}
+#qr{display:flex;justify-content:center;margin:10px 0}
+video{width:min(80vw,360px);border-radius:12px;background:#000}
+#info{position:fixed;left:10px;top:calc(78px + env(safe-area-inset-top,0px));font-size:13px;color:#234;background:rgba(255,255,255,.7);padding:6px 10px;border-radius:10px}
+#cnt{position:fixed;right:10px;top:calc(78px + env(safe-area-inset-top,0px));font-size:18px;font-weight:700;color:#fff;background:#3b6cff;padding:8px 14px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+#flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:8}
+textarea{width:min(80vw,340px);height:60px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="bar" id="top">
+  <button id="mAdd" class="on">➕ 설치</button>
+  <button id="mDel">🧽 지우기</button>
+  <button id="mMulti">▦ 여러개(영역)</button>
+  <span id="pal" style="display:flex;gap:6px;align-items:center"></span>
+</div>
+<div id="info">한 손가락 드래그: 시점 회전 · 두 손가락: 확대/이동 · 톡 터치: 설치</div>
+<div id="cnt">🧱 0개</div>
+<div class="bar" id="bot">
+  <button id="bSpin">🔄 360° 돌려보기</button>
+  <button id="bFront">👀 정면</button>
+  <button id="bSide">👉 옆(오른쪽)</button>
+  <button id="bTop">⬆ 위</button>
+  <button id="bView">🎯 시점 초기화</button>
+  <button id="bShare">📤 QR 공유</button>
+  <button id="bScan">📷 QR 스캔</button>
+  <button id="bBoom">💥 폭파</button>
+  <button id="bClear" class="red">🗑 전부 없애기</button>
+</div>
+<div id="flash"></div>
+<div id="modal"><div id="box"></div></div>
+
+<script>
+const N=30, MAXH=15;
+const COLORS=[0xff5a5a,0xffa63d,0xffe14d,0x5fd068,0x4db8ff,0x6b6bff,0xc77dff,0xf4f4f4];
+let color=0, mode='add';
+
+// ---------- 장면 ----------
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xcfe8ff);
+scene.fog=new THREE.Fog(0xcfe8ff,60,140);
+const camera=new THREE.PerspectiveCamera(50,1,0.1,300);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.prepend(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff,0x8899aa,0.75));
+const sun=new THREE.DirectionalLight(0xffffff,0.6);sun.position.set(20,40,15);scene.add(sun);
+
+// 바닥(칸)
+const floorMat=new THREE.MeshLambertMaterial({color:0xf2efe6});
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(N,N),floorMat);
+floor.rotation.x=-Math.PI/2;scene.add(floor);
+const grid=new THREE.GridHelper(N,N,0x889,0xbbb);grid.position.y=0.01;scene.add(grid);
+// 방 벽(낮은 벽)
+const wallMat=new THREE.MeshLambertMaterial({color:0xe4d8c0});
+[[0,-N/2,N,1],[0,N/2,N,1],[-N/2,0,1,N],[N/2,0,1,N]].forEach(([x,z,w,d])=>{
+  const m=new THREE.Mesh(new THREE.BoxGeometry(w,2,d),wallMat);
+  m.position.set(x,1,z);scene.add(m);
+});
+
+// 정면/옆/위 시점에서는 벽을 반투명하게
+let wallsOn=false;
+function wallsGhost(on){
+  if(on===wallsOn)return;wallsOn=on;
+  wallMat.transparent=on;wallMat.opacity=on?0.12:1;wallMat.depthWrite=!on;wallMat.needsUpdate=true;
+}
+
+// ---------- 블록 ----------
+const geo=new THREE.BoxGeometry(1,1,1), edge=new THREE.EdgesGeometry(geo);
+const edgeMat=new THREE.LineBasicMaterial({color:0x000000,transparent:true,opacity:.35});
+const mats=COLORS.map(c=>new THREE.MeshLambertMaterial({color:c}));
+const blocks=new Map(); // "x,y,z" -> {mesh,c}
+const key=(x,y,z)=>x+','+y+','+z;
+const toWorld=(x,y,z)=>new THREE.Vector3(x-N/2+.5,y+.5,z-N/2+.5);
+function addBlock(x,y,z,c){
+  if(x<0||z<0||x>=N||z>=N||y<0||y>=MAXH||blocks.has(key(x,y,z)))return false;
+  const m=new THREE.Mesh(geo,mats[c]);m.position.copy(toWorld(x,y,z));
+  m.add(new THREE.LineSegments(edge,edgeMat));
+  m.userData={x,y,z,c};scene.add(m);blocks.set(key(x,y,z),m);return true;
+}
+function delBlock(x,y,z){
+  const m=blocks.get(key(x,y,z));if(!m)return;
+  scene.remove(m);blocks.delete(key(x,y,z));
+}
+function clearAll(){[...blocks.values()].forEach(m=>scene.remove(m));blocks.clear();}
+
+// 미리보기(고스트)
+const ghost=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:0x3b6cff,transparent:true,opacity:.4}));
+ghost.visible=false;scene.add(ghost);
+
+// ---------- 카메라 (3인칭 궤도) ----------
+const DEF={th:0.8,ph:0.9,d:34,t:new THREE.Vector3(0,0,0)};
+let th=DEF.th,ph=DEF.ph,dist=DEF.d,target=DEF.t.clone(),spin=false,goal=null;
+function updCam(){
+  ph=Math.max(0.05,Math.min(1.55,ph));dist=Math.max(5,Math.min(80,dist));
+  target.x=Math.max(-N/2,Math.min(N/2,target.x));target.z=Math.max(-N/2,Math.min(N/2,target.z));
+  camera.position.set(
+    target.x+dist*Math.sin(ph)*Math.sin(th),
+    target.y+dist*Math.cos(ph),
+    target.z+dist*Math.sin(ph)*Math.cos(th));
+  camera.lookAt(target);
+}
+function resize(){
+  const w=innerWidth,h=innerHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize);resize();
+
+// ---------- 입력 (마우스/터치 공통) ----------
+const dom=renderer.domElement, ptrs=new Map(), ray=new THREE.Raycaster(), mouse=new THREE.Vector2();
+let moved=0,t0=0,lastD=0,lastMid=null;
+dom.addEventListener('contextmenu',e=>e.preventDefault());
+dom.addEventListener('pointerdown',e=>{
+  dom.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY,b:e.button});
+  if(ptrs.size===1){moved=0;t0=performance.now();}
+  lastD=0;lastMid=null;goal=null;spin=false;bSpin.classList.remove('on');
+});
+dom.addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId);
+  if(!p){if(e.pointerType==='mouse')hover(e.clientX,e.clientY);return;}
+  const dx=e.clientX-p.x,dy=e.clientY-p.y;p.x=e.clientX;p.y=e.clientY;
+  if(ptrs.size===1){
+    moved+=Math.abs(dx)+Math.abs(dy);
+    if(moved>6){wallsGhost(false);th-=dx*0.006;ph-=dy*0.006;ghost.visible=false;}
+  }else if(ptrs.size===2){
+    moved+=99;
+    const [a,b]=[...ptrs.values()];
+    const d=Math.hypot(a.x-b.x,a.y-b.y),mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+    if(lastD)dist*=lastD/d;
+    if(lastMid){
+      const k=dist*0.0016,mdx=mx-lastMid.x,mdy=my-lastMid.y;
+      target.x-=(Math.cos(th)*mdx+Math.sin(th)*mdy)*k;
+      target.z-=(-Math.sin(th)*mdx+Math.cos(th)*mdy)*k;
+    }
+    lastD=d;lastMid={x:mx,y:my};
+  }
+});
+function up(e){
+  const p=ptrs.get(e.pointerId);if(!p)return;
+  const wasSingle=ptrs.size===1;ptrs.delete(e.pointerId);lastD=0;lastMid=null;
+  if(wasSingle&&moved<=6&&performance.now()-t0<500&&e.type==='pointerup'){
+    act(e.clientX,e.clientY,p.b===2?'del':mode);
+  }
+}
+dom.addEventListener('pointerup',up);dom.addEventListener('pointercancel',up);
+dom.addEventListener('wheel',e=>{e.preventDefault();dist*=1+e.deltaY*0.001;},{passive:false});
+
+function pick(cx,cy){
+  mouse.set(cx/innerWidth*2-1,-(cy/innerHeight)*2+1);ray.setFromCamera(mouse,camera);
+  const hits=ray.intersectObjects([floor,...blocks.values()],false);
+  return hits[0]||null;
+}
+function target3(h,m){ // 설치할 칸 or 지울 블록
+  if(!h)return null;
+  if(h.object===floor){
+    if(m==='del')return null;
+    return {x:Math.floor(h.point.x+N/2),y:0,z:Math.floor(h.point.z+N/2)};
+  }
+  const u=h.object.userData;
+  if(m==='del')return u;
+  const n=h.face.normal;return {x:u.x+Math.round(n.x),y:u.y+Math.round(n.y),z:u.z+Math.round(n.z)};
+}
+// 여러개 설치(선택사항): 두 모서리를 차례로 터치하면 사이 영역을 한 번에 설치/삭제
+let multi=false,startP=null;
+const area=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:0xff9a3b,transparent:true,opacity:.35,depthWrite:false}));
+area.visible=false;scene.add(area);
+const clampP=t=>({x:Math.max(0,Math.min(N-1,t.x)),y:Math.max(0,Math.min(MAXH-1,t.y)),z:Math.max(0,Math.min(N-1,t.z))});
+function showArea(a,b){
+  const x0=Math.min(a.x,b.x),x1=Math.max(a.x,b.x),y0=Math.min(a.y,b.y),y1=Math.max(a.y,b.y),z0=Math.min(a.z,b.z),z1=Math.max(a.z,b.z);
+  area.scale.set(x1-x0+1.02,y1-y0+1.02,z1-z0+1.02);
+  area.position.set(x0-N/2+(x1-x0+1)/2,y0+(y1-y0+1)/2,z0-N/2+(z1-z0+1)/2);area.visible=true;
+}
+function fill(a,b,m){
+  for(let x=Math.min(a.x,b.x);x<=Math.max(a.x,b.x);x++)
+  for(let y=Math.min(a.y,b.y);y<=Math.max(a.y,b.y);y++)
+  for(let z=Math.min(a.z,b.z);z<=Math.max(a.z,b.z);z++){
+    if(m==='del')delBlock(x,y,z);else addBlock(x,y,z,color);
+  }
+}
+function resetMulti(){startP=null;area.visible=false;}
+function act(cx,cy,m){
+  if(boom)return;
+  const t=target3(pick(cx,cy),m);if(!t)return;
+  if(multi){
+    const p=clampP(t);
+    if(!startP){startP=p;showArea(p,p);return;}
+    fill(startP,p,m);resetMulti();ghost.visible=false;return;
+  }
+  if(m==='del')delBlock(t.x,t.y,t.z);else addBlock(t.x,t.y,t.z,color);
+  ghost.visible=false;
+}
+function hover(cx,cy){
+  if(multi){
+    ghost.visible=false;
+    if(startP){const t=target3(pick(cx,cy),mode);if(t)showArea(startP,clampP(t));}
+    return;
+  }
+  if(mode!=='add'){ghost.visible=false;return;}
+  const t=target3(pick(cx,cy),'add');
+  if(t&&t.x>=0&&t.z>=0&&t.x<N&&t.z<N&&t.y<MAXH&&!blocks.has(key(t.x,t.y,t.z))){
+    ghost.position.copy(toWorld(t.x,t.y,t.z));ghost.visible=true;
+  }else ghost.visible=false;
+}
+
+// ---------- UI ----------
+const $=id=>document.getElementById(id);
+const bSpin=$('bSpin');
+const pal=$('pal');
+COLORS.forEach((c,i)=>{
+  const b=document.createElement('button');b.className='sw'+(i===0?' on':'');
+  b.style.background='#'+c.toString(16).padStart(6,'0');
+  b.onclick=()=>{color=i;[...pal.children].forEach((x,j)=>x.classList.toggle('on',j===i));};
+  pal.appendChild(b);
+});
+$('mAdd').onclick=()=>{mode='add';$('mAdd').classList.add('on');$('mDel').classList.remove('on');};
+$('mMulti').onclick=()=>{multi=!multi;resetMulti();ghost.visible=false;$('mMulti').classList.toggle('on',multi);$('info').textContent=multi?'여러개 모드: 모서리 2곳을 차례로 터치하면 그 사이를 한 번에 설치/지우기 (다시 누르면 해제)':'한 손가락 드래그: 시점 회전 · 두 손가락: 확대/이동 · 톡 터치: 설치';};
+$('mDel').onclick=()=>{mode='del';$('mDel').classList.add('on');$('mAdd').classList.remove('on');ghost.visible=false;};
+bSpin.onclick=()=>{spin=!spin;if(spin)wallsGhost(false);bSpin.classList.toggle('on',spin);};
+// 쌓은 블록 전체가 화면에 들어오도록 중심과 거리를 계산
+function fitBlocks(){
+  if(!blocks.size)return {t:new THREE.Vector3(0,0,0),d:DEF.d};
+  const mn=new THREE.Vector3(1e9,1e9,1e9),mx=new THREE.Vector3(-1e9,-1e9,-1e9);
+  blocks.forEach(m=>{mn.min(m.position);mx.max(m.position);});
+  mn.addScalar(-.5);mx.addScalar(.5);
+  const size=mx.clone().sub(mn),c=mn.clone().add(mx).multiplyScalar(.5);
+  const r=size.length()/2;
+  const half=Math.atan(Math.tan(camera.fov*Math.PI/360)*Math.min(1,camera.aspect));
+  return {t:c,d:Math.max(8,Math.min(80,r/Math.sin(half)*1.15))};
+}
+function goView(a,b){
+  const d=(((a-th)%(2*Math.PI))+3*Math.PI)%(2*Math.PI)-Math.PI;
+  const f=fitBlocks();
+  goal={th:th+d,ph:b,t:f.t,d:f.d};wallsGhost(true);spin=false;bSpin.classList.remove('on');
+}
+$('bFront').onclick=()=>goView(0,1.55);
+$('bSide').onclick=()=>goView(Math.PI/2,1.55);
+$('bTop').onclick=()=>goView(0,0.05);
+$('bView').onclick=()=>{goal=null;wallsGhost(false);th=DEF.th;ph=DEF.ph;dist=DEF.d;target.copy(DEF.t);spin=false;bSpin.classList.remove('on');};
+$('bClear').onclick=()=>{
+  if(!blocks.size)return;
+  box.innerHTML='<b>쌓은 블록을 전부 없앨까요?</b><div style="margin-top:14px"><button id="yes" class="red">네, 전부 없애기</button> <button id="no">취소</button></div>';
+  $('yes').onclick=()=>{clearAll();resetMulti();closeModal();};
+  $('no').onclick=closeModal;modal.style.display='flex';
+};
+
+
+// ---------- 💥 폭파 ----------
+let boom=null,shake=0;
+function startBoom(){
+  if(boom||!blocks.size)return;
+  const list=[...blocks.values()],c=new THREE.Vector3();
+  list.forEach(m=>c.add(m.position));c.divideScalar(list.length);
+  const R=()=>Math.random()-.5;
+  boom={t:0,last:performance.now(),items:list.map(m=>{
+    const dir=m.position.clone().sub(c);dir.y+=1;
+    if(dir.lengthSq()<0.01)dir.set(R(),1,R());
+    dir.normalize();
+    const v=dir.multiplyScalar(6+Math.random()*10);v.y+=8+Math.random()*10;
+    return {m,home:m.position.clone(),v,w:new THREE.Vector3(R()*14,R()*14,R()*14)};
+  })};
+  ghost.visible=false;resetMulti();spin=false;bSpin.classList.remove('on');
+  $('bBoom').classList.add('on');
+  const fl=$('flash');fl.style.transition='none';fl.style.opacity=.9;void fl.offsetWidth;fl.style.transition='opacity .7s';fl.style.opacity=0;
+  shake=1;
+}
+function stepBoom(){
+  if(!boom)return;
+  const now=performance.now(),dt=Math.min(0.033,(now-boom.last)/1000);boom.last=now;boom.t+=dt;
+  const lim=N/2-0.5,T1=3.2,T2=4.5;
+  if(boom.t<T1){
+    boom.items.forEach(({m,v,w})=>{
+      v.y-=30*dt;m.position.addScaledVector(v,dt);
+      m.rotation.x+=w.x*dt;m.rotation.y+=w.y*dt;m.rotation.z+=w.z*dt;
+      if(m.position.y<0.5){m.position.y=0.5;v.y*=-0.4;v.x*=0.7;v.z*=0.7;w.multiplyScalar(0.7);if(Math.abs(v.y)<1.2)v.y=0;}
+      if(Math.abs(m.position.x)>lim){m.position.x=Math.sign(m.position.x)*lim;v.x*=-0.5;}
+      if(Math.abs(m.position.z)>lim){m.position.z=Math.sign(m.position.z)*lim;v.z*=-0.5;}
+    });
+  }else if(boom.t<T2){
+    const q=new THREE.Quaternion();
+    boom.items.forEach(({m,home})=>{m.position.lerp(home,0.14);m.quaternion.slerp(q,0.14);});
+  }else{
+    boom.items.forEach(({m,home})=>{m.position.copy(home);m.rotation.set(0,0,0);});
+    boom=null;$('bBoom').classList.remove('on');
+  }
+}
+$('bBoom').onclick=startBoom;
+
+
+
+// ---------- 공유 / 스캔 ----------
+const B64='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function encode(){ // 블록 1개 = 글자 3개 (x,z 5비트 / y 4비트 / 색 3비트 = 17비트→18비트)
+  let s='';
+  blocks.forEach(m=>{const u=m.userData;
+    const v=(u.x<<13)|(u.z<<8)|(u.y<<4)|(u.c<<1);
+    s+=B64[(v>>12)&63]+B64[(v>>6)&63]+B64[v&63];});
+  return s;
+}
+function decode(s){
+  s=s.trim();const i=s.indexOf('d=');if(i>=0)s=s.slice(i+2);
+  s=s.replace(/[^A-Za-z0-9_-]/g,'');
+  const list=[];
+  for(let i=0;i+2<s.length;i+=3){
+    const v=(B64.indexOf(s[i])<<12)|(B64.indexOf(s[i+1])<<6)|B64.indexOf(s[i+2]);
+    list.push([(v>>13)&31,(v>>4)&15,(v>>8)&31,(v>>1)&7]);
+  }
+  return list;
+}
+function loadData(s){
+  const list=decode(s);if(!list.length)return false;
+  clearAll();list.forEach(([x,y,z,c])=>addBlock(x,y,z,c));return true;
+}
+const modal=$('modal'),box=$('box');
+let stream=null,scanning=false;
+function closeModal(){scanning=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}modal.style.display='none';box.innerHTML='';}
+modal.addEventListener('pointerdown',e=>{if(e.target===modal)closeModal();});
+$('bShare').onclick=()=>{
+  const here=location.href.split('#')[0];
+  const own=/^https:/.test(here)&&!/claude/.test(location.hostname);
+  const url=own?here:'https://claude.ai/artifact/YQR2kRTnnvZr1hSz3uRbTZ'; // 공유할 사이트 주소 (바꾸려면 여기 수정)
+  const ok=/^https?:/.test(url);
+  box.innerHTML='<b>사이트 공유 QR</b><div id="qr"></div>'+
+    (ok?'<div style="font-size:12px;color:#555">카메라로 스캔하면 이 사이트가 열려요</div>'
+       :'<div style="font-size:12px;color:#d33">지금은 파일로 열려 있어서 공유할 수 없어요.<br>사이트를 인터넷에 올린 주소(https)로 열면 QR이 만들어져요.</div>')+
+    '<textarea readonly></textarea><div><button id="cp">링크 복사</button> <button id="cl">닫기</button></div>';
+  box.querySelector('textarea').value=url;
+  if(ok){try{new QRCode($('qr'),{text:url,width:260,height:260,correctLevel:QRCode.CorrectLevel.M});}catch(e){$('qr').textContent='QR을 만들지 못했어요. 아래 링크를 복사해서 보내 주세요.';}}
+  $('cp').onclick=()=>{box.querySelector('textarea').select();navigator.clipboard&&navigator.clipboard.writeText(url);};
+  $('cl').onclick=closeModal;modal.style.display='flex';
+};
+$('bScan').onclick=async()=>{
+  box.innerHTML='<b>QR 스캔</b><br><video playsinline muted></video><div style="font-size:12px;color:#555;margin:6px">QR 코드를 화면에 비춰 주세요</div><button id="cl">닫기</button>';
+  $('cl').onclick=closeModal;modal.style.display='flex';
+  const v=box.querySelector('video');
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    v.srcObject=stream;await v.play();scanning=true;
+    const cv=document.createElement('canvas'),cx=cv.getContext('2d',{willReadFrequently:true});
+    const det=window.BarcodeDetector?new BarcodeDetector({formats:['qr_code']}):null;
+    const loop=async()=>{
+      if(!scanning)return;
+      let txt=null;
+      if(v.videoWidth){
+        cv.width=v.videoWidth;cv.height=v.videoHeight;cx.drawImage(v,0,0);
+        try{
+          if(det){const r=await det.detect(cv);if(r[0])txt=r[0].rawValue;}
+          else{const im=cx.getImageData(0,0,cv.width,cv.height);const r=jsQR(im.data,im.width,im.height);if(r)txt=r.data;}
+        }catch(e){}
+      }
+      if(txt){if(/^https?:/.test(txt.trim())){location.href=txt.trim();return;}if(loadData(txt)){closeModal();return;}}
+      requestAnimationFrame(loop);
+    };loop();
+  }catch(e){box.innerHTML='카메라를 사용할 수 없어요.<br>(https 주소이거나 카메라 권한이 필요해요)<br><br><button id="cl">닫기</button>';$('cl').onclick=closeModal;}
+};
+
+// ---------- 시작 ----------
+if(location.hash.includes('d='))loadData(location.hash);
+let shown=-1;
+(function loop(){
+  requestAnimationFrame(loop);
+  if(spin)th+=0.008;
+  if(goal){
+    th+=(goal.th-th)*0.15;ph+=(goal.ph-ph)*0.15;dist+=(goal.d-dist)*0.15;target.lerp(goal.t,0.15);
+    if(Math.abs(goal.th-th)<0.002&&Math.abs(goal.ph-ph)<0.002&&Math.abs(goal.d-dist)<0.05&&target.distanceTo(goal.t)<0.02){th=goal.th;ph=goal.ph;dist=goal.d;target.copy(goal.t);goal=null;}
+  }
+  if(blocks.size!==shown){shown=blocks.size;$('cnt').textContent='🧱 '+shown+'개';}
+  stepBoom();updCam();
+  if(shake>0.01){const k=shake*1.2;camera.position.x+=(Math.random()-.5)*k;camera.position.y+=(Math.random()-.5)*k;camera.position.z+=(Math.random()-.5)*k;shake*=0.92;}
+  renderer.render(scene,camera);
+})();
+</script>
+</body>
+</html>
